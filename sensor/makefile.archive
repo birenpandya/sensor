@@ -1,0 +1,51 @@
+# File Name: makefile.archive
+# Author: Sunny Taksande
+# Date: 27 June 2011
+# Purpose: makefile for building library for master slave sensor
+#          communication.
+
+# Set appropriate paths
+
+INSTALLDIR	= ../console
+PROJECTPATH	= .
+SOURCEPATH	= $(PROJECTPATH)/src
+INCLUDEPATH	= $(PROJECTPATH)/include
+BINPATH		= $(PROJECTPATH)/bin
+LIBPATH		= $(PROJECTPATH)/lib
+TARGETPATH	= $(BINPATH)
+
+TARGETS		= 
+LIBS            = $(LIBPATH)/libsnsr.a
+
+SRCFILES 	= $(PROJECTPATH)/src/sensor.c \
+		$(PROJECTPATH)/src/sensor_int.c  
+
+DEPENDANCIES	= makefile.archive \
+		$(INSTALLDIR)/include/common.h \
+		$(PROJECTPATH)/include/sensor.h \
+		$(PROJECTPATH)/include/sensor_int.h 
+
+		 
+# Compilation Flags
+
+CC		= /media/_home/aurion/ruiva-dm355-dvsdk2/montavista/pro/devkit/arm/v5t_le/bin/arm_v5t_le-gcc
+CFLAGS		= -c 
+INCLUDEFLAGS    = -I $(INCLUDEPATH) -I $(INSTALLDIR)/include
+
+# Compilation Section
+
+all: $(LIBS)
+
+$(LIBPATH)/libsnsr.a: $(DEPENDANCIES) $(SRCFILES)
+	$(CC) $(CFLAGS) $(SRCFILES) $(INCLUDEFLAGS)
+	ar rcs $@ *.o
+	rm *.o
+
+install: $(LIBS)
+	install -m666 $(LIBS) $(INSTALLDIR)/lib
+	install -m666 $(INCLUDEPATH)/sensor.h $(INSTALLDIR)/include
+
+# Cleaning Section
+
+clean:
+	rm -f $(LIBS)

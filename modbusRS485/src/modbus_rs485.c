@@ -1,0 +1,207 @@
+/*------------------------------------------------------------------------------
+File Name: modbus_rs485.c
+Author: Biren Pandya
+ate: 22 June 2011
+Purpose: implemntation of modbus RS485 read and write calls.
+------------------------------------------------------------------------------*/
+
+/*------------ Include Files -------------------------------------------------*/
+
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include "modbus_rs485.h"
+#include "modbus_rs485_int.h"
+#include "uart.h"
+#include "sensor_common.h"
+
+static int rs485port;
+
+
+/*------------ Function Definitions-------------------------------------------*/
+
+/*
+Function to initialize RS485 communication.
+*/
+int modbusRS485_init(int ionum)
+{	
+	int status = MODBUS_SUCCESS;
+	rs485port = ionum;
+#if MODBUS_DEBUG
+	printf(" rs485 port is %d \n",rs485port);	
+#endif
+	ptz_init();
+ 	ptz_write(RS485_DEVICE_WRITE_MODE);
+
+	if (uart_init(0) <= 0) {
+		printf("modbusRS485_init: uart_init failed \n");
+		status = EMODBUS_INIT;
+	}
+
+#if MODBUS_DEBUG
+        printf("  port is %d  open\n",rs485port);
+#endif
+	
+	return status;
+}
+
+/*
+Function to terminate RS485 communication.
+*/
+
+int modbusRS485_exit(int ionum)
+{
+	int status = MODBUS_SUCCESS;
+        if (uart_exit(ionum) != MODBUS_SUCCESS) {
+                printf("modbusRS485_init: uart_exit failed \n");
+                status = EMODBUS_EXIT;
+        }
+	ptz_exit();
+        return status;
+}
+
+/*
+Function that makes a complete ascii frame and sends on uart.
+*/
+int modbusRS485_send( u_char address, u_char function, u_char* data, uint8_t nbytes)
+{
+	    /* initialize variables */
+	u_char *ptr=NULL, frameLRCByte=0;
+	u_char rowFrameBuffer[MAX_ASCIIFRAME_SIZE],asciiFrameBuffer[MAX_ASCIIFRAME_SIZE];
+	int status = MODBUS_SUCCESS;
+	unsigned int i,endByteStartAdd;
+
+	ptz_write(RS485_DEVICE_WRITE_MODE);
+	usleep(10000);
+        if((address == 0x00) || (function== 0x00))
+        {
+                printf("modbusRS485_init:Wrong input data \n");
+		status = EMODBUS_ADDR_FUNC;	
+        }
+	else 
+	{
+		rowFrameBuffer[ADDR_INDEX] = address; //address
+		rowFrameBuffer[FUNC_INDEX] = function; //command 
+		if(data == NULL)
+        		rowFrameBuffer[DATALEN_INDEX] = 0x00;
+		else  {
+			rowFrameBuffer[DATALEN_INDEX] = nbytes;
+			str_copy(&rowFrameBuffer[DATA_INDEX],data, nbytes); 	
+		}
+		 rowFrameBuffer[ nbytes + DATA_INDEX ] = compute_LRCByte(&rowFrameBuffer[ADDR_INDEX], nbytes+ DATA_INDEX );
+
+		/*all parameter set in rowdatabuffer */
+		asciiFrameBuffer[START_BYTE_OFFSET] = START_BYTE;         // start  byte - ":"
+		nbytes= nbytes + DATA_INDEX + LRC_BYTE_SIZE; 		  // Adding add+func+LRCcode with data
+	
+		bytes2ascii(rowFrameBuffer, &asciiFrameBuffer[1],nbytes); // 
+		endByteStartAdd = ASCII_CODE_SIZE * (nbytes);
+		asciiFrameBuffer[++endByteStartAdd]  =  END_BYTE1;
+		asciiFrameBuffer[++endByteStartAdd] =  END_BYTE2;
+
+		status = uart_write(rs485port,asciiFrameBuffer,++endByteStartAdd);
+		if(status != MODBUS_SUCCESS){
+		       	printf("modbusRS485_send: uart_write failed \n");
+		}
+		usleep(13000);
+//        ptz_write(RS485_DEVICE_READ_MODE);
+	}
+#if MODBUS_DEBUG
+	ascii_dump(asciiFrameBuffer,endByteStartAdd );
+#endif	
+	return status;
+}
+
+
+/*
+Function that receives a complete ascii frame and stores address, function code and data.
+*/
+int modbusRS485_recv(u_char *address, u_char *function, u_char *data, uint8_t* nbytes)
+{
+	
+	u_char asciiFrameBuffer[MAX_ASCIIFRAME_SIZE] , *ptr = NULL;
+	u_char frameLRCByte = 0;
+
+	int status = MODBUS_SUCCESS,num_bytes;
+	u_char i,j;
+	 ptz_write(RS485_DEVICE_READ_MODE);
+	memset( asciiFrameBuffer,'\0', sizeof(asciiFrameBuffer));
+	num_bytes = uart_read(rs485port,asciiFrameBuffer,MAX_ASCIIFRAME_SIZE );
+	
+	if(num_bytes < 0  )
+	{	status = num_bytes;
+
+	} 
+	else if(num_bytes == 13)  {
+		status = decode_recv_data(asciiFrameBuffer,address,function ,data,nbytes,num_bytes) ;
+	}
+	else 
+	{		
+		status = decode_recv_data(asciiFrameBuffer,address,function ,data,nbytes,num_bytes) ;
+        }
+
+
+    //  ptz_write(RS485_DEVICE_WRITE_MODE);
+	#if MODBUS_DEBUG
+	printf("Rx:\t");
+	hex_dump(*address, *function, data, *nbytes);
+	#endif
+	return status;
+}
+
+
+int  decode_recv_data(u_char  *asciiFrameBuffer,u_char *address, u_char *function, u_char *data,uint8_t *bytes, int  num_bytes )
+{ 
+	void *ptr;
+	u_char dataFrameBuffer[MAX_ASCIIFRAME_SIZE];
+	u_char dataLenInMsg,recvLRCByte;
+	int status,j,i;
+	uint8_t nbytes;
+	memset(dataFrameBuffer,'\0',sizeof(dataFrameBuffer));
+	
+	if(num_bytes == 0) {
+	        
+		#if ERROR_PRINTS
+		 printf("modbusRS485_recv: uart_read failed \n");
+                #endif
+		 status = EMODBUS_FRAME_LEN;
+                 }
+        else if ( (asciiFrameBuffer[num_bytes - 1] == END_BYTE2) && (asciiFrameBuffer[num_bytes - 2] == END_BYTE1) != 1) {
+                        printf("modbusRS485_recv: endbyte not  found\n");
+                        status = EMODBUS_END_BYTES;
+                }
+        else {
+
+		ascii2bytes(( asciiFrameBuffer+ADDRESS_OFFSET) ,dataFrameBuffer,( num_bytes- 3 ));
+	
+		*address = *dataFrameBuffer;
+		*function = *(dataFrameBuffer+FUNC_INDEX);
+		nbytes = *(dataFrameBuffer+DATALEN_INDEX);
+
+		if(nbytes != 0)
+		{
+			str_copy(data,&dataFrameBuffer[DATA_INDEX],nbytes);
+		}else{
+			 *data = '\0';
+		}
+		
+		recvLRCByte = dataFrameBuffer[DATA_INDEX+ nbytes];
+		if(recvLRCByte != compute_LRCByte(&dataFrameBuffer[ADDR_INDEX],nbytes + DATA_INDEX))
+	 	{
+			#if 0
+			printf("nub_bytes:%d. \t RecData:  ",num_bytes);
+			 for(i=0;i<12;i++)
+	        	        printf("\t%02x",asciiFrameBuffer[i]);
+
+                	printf("\n modbusRS485_recv: LRC byte of received data: %02x \n",recvLRCByte);
+               		#endif 
+			status = EMODBUS_LRC;
+	        }else
+		{
+			*bytes=nbytes ; 
+			status =  MODBUS_SUCCESS;
+	        }
+	}
+	return status;
+}
+
